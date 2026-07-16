@@ -42,7 +42,12 @@ android {
     }
 
     lint {
-        disable += "NullSafeMutableLiveData"  // AGP/Kotlin 2.0 compatibility bug
+        // AGP 8.7 + Kotlin 2.0 compatibility: these lint detectors crash with IncompatibleClassChangeError
+        disable += listOf(
+            "NullSafeMutableLiveData",
+            "FrequentlyChangingValue",
+            "RememberInComposition",
+        )
     }
 
     packaging {
