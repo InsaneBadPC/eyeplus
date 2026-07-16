@@ -2,6 +2,7 @@ package com.eyeplus.ui.camera
 
 import android.app.Application
 import android.net.wifi.WifiManager
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.eyeplus.data.ai.MonitoringService
@@ -10,6 +11,7 @@ import com.eyeplus.data.onvif.OnvifDiscovery
 import com.eyeplus.data.onvif.MediaProfile
 import com.eyeplus.data.onvif.StreamUri
 import com.eyeplus.data.onvif.PtzPosition
+import com.eyeplus.data.audio.AudioBackchannel
 import com.eyeplus.data.recording.RecorderManager
 import com.eyeplus.util.NetworkUtils
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +58,14 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     // AI Monitoring
     private var monitoringServiceIntent: android.content.Intent? = null
+
+    // Audio backchannel for camera speaker alerts
+    private var audioBackchannel: AudioBackchannel? = null
+
+    companion object {
+        private const val ALERT_DEBOUNCE_MS = 60_000L // 1 min between audio alerts
+    }
+    private var lastAlertTimeMs = 0L
 
     /**
      * Discover ONVIF cameras on the local network via WS-Discovery.
@@ -392,6 +402,51 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
+            // Connect audio backchannel for camera speaker alerts
+            viewModelScope.launch {
+                val bc = AudioBackchannel(context)
+                val connected = bc.connect(
+                    host = state.cameraIp,
+                    port = 554,
+                    username = state.username,
+                    password = state.password
+                )
+                if (connected) {
+                    audioBackchannel = bc
+                    Log.d("CameraViewModel", "Audio backchannel connected")
+                } else {
+                    Log.w("CameraViewModel", "Audio backchannel connection failed")
+                }
+            }
+
+            // Wire callbacks: auto-record on person detection, audio alert on suspicious
+            MonitoringService.onPersonDetected = { analysis ->
+                if (!_uiState.value.isRecording) {
+                    Log.d("CameraViewModel", "Auto-recording: person detected")
+                    startRecording()
+                }
+            }
+            MonitoringService.onSuspiciousActivity = { analysis ->
+                val now = System.currentTimeMillis()
+                if (now - lastAlertTimeMs > ALERT_DEBOUNCE_MS) {
+                    lastAlertTimeMs = now
+                    Log.d("CameraViewModel", "Suspicious activity alert: ${analysis.description}")
+                    // Ensure recording is active
+                    if (!_uiState.value.isRecording) {
+                        startRecording()
+                    }
+                    // Speak alert through camera speaker
+                    val bc = audioBackchannel
+                    if (bc != null && bc.status.value == AudioBackchannel.Status.CONNECTED) {
+                        viewModelScope.launch {
+                            bc.speakText(
+                                "Upozornění: ${analysis.description.take(100)}"
+                            )
+                        }
+                    }
+                }
+            }
+
         } catch (e: Exception) {
             _uiState.value = _uiState.value.copy(
                 error = "AI monitoring selhal: ${e.message}"
@@ -400,11 +455,23 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun stopMonitoring() {
+        // Unwire monitoring callbacks
+        MonitoringService.onPersonDetected = null
+        MonitoringService.onSuspiciousActivity = null
+
         try {
             val context = getApplication<Application>()
             context.stopService(MonitoringService.stopIntent(context))
             monitoringServiceIntent = null
         } catch (_: Exception) { }
+
+        // Disconnect audio backchannel
+        audioBackchannel?.let { bc ->
+            viewModelScope.launch {
+                bc.disconnect()
+                audioBackchannel = null
+            }
+        }
 
         _uiState.value = _uiState.value.copy(
             isMonitoring = false,
@@ -415,11 +482,24 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+
+        // Clean up monitoring callbacks
+        MonitoringService.onPersonDetected = null
+        MonitoringService.onSuspiciousActivity = null
+
         recorderManager?.stopRecording()
         recorderManager = null
         try {
             val context = getApplication<Application>()
             context.stopService(MonitoringService.stopIntent(context))
         } catch (_: Exception) { }
+
+        // Clean up audio backchannel
+        audioBackchannel?.let { bc ->
+            viewModelScope.launch {
+                bc.disconnect()
+                audioBackchannel = null
+            }
+        }
     }
 }

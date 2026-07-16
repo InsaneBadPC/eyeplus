@@ -105,16 +105,12 @@ class TtsManager(context: Context) {
 
     /**
      * Speak text through the camera's speaker via audio backchannel.
-     * This requires AudioBackchannel to be connected.
+     * Delegates to [AudioBackchannel.speakText] which handles the full
+     * TTS→WAV→PCM→G.711→RTP→RTSP pipeline.
      */
-    fun speakToCamera(text: String, audioBackchannel: AudioBackchannel?) {
-        if (!isInitialized) return
-
-        // Generate audio data from TTS and send via backchannel
-        tts.synthesizeToFile(text, null, null) // This generates a temp WAV file
-        // The AudioBackchannel then sends the audio via RTSP backchannel track
-
-        Log.d(TAG, "Speaking to camera: $text")
+    suspend fun speakToCamera(text: String, audioBackchannel: AudioBackchannel?) {
+        if (!isInitialized || audioBackchannel == null) return
+        audioBackchannel.speakText(text)
     }
 
     /**

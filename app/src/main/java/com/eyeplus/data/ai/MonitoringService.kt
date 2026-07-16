@@ -105,9 +105,14 @@ class MonitoringService : Service() {
                             checkInterval = PERSON_CHECK_INTERVAL
                         )
 
+                        // Fire person-detected callback (e.g., auto-recording)
+                        onPersonDetected?.invoke(analysis)
+
                         // Handle alerts
                         if (analysis.alertLevel == "high" || analysis.suspiciousActivity) {
                             sendAlertNotification(analysis)
+                            // Fire suspicious-activity callback (e.g., audio alert)
+                            onSuspiciousActivity?.invoke(analysis)
                         }
                     } else {
                         // No person - back to normal interval
@@ -228,6 +233,12 @@ class MonitoringService : Service() {
         const val PERSON_CHECK_INTERVAL = 5_000L // 5s when person detected
 
         val state = MutableStateFlow(ServiceState())
+
+        /** Callback fired when a person is detected (before Gemini analysis). */
+        var onPersonDetected: (suspend (FrameAnalysis) -> Unit)? = null
+
+        /** Callback fired when alert level is high or suspicious activity detected. */
+        var onSuspiciousActivity: (suspend (FrameAnalysis) -> Unit)? = null
 
         const val ACTION_START = "com.eyeplus.action.START_MONITORING"
         const val ACTION_STOP = "com.eyeplus.action.STOP_MONITORING"
