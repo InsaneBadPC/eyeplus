@@ -41,6 +41,10 @@ android {
         jvmTarget = "17"
     }
 
+    lint {
+        disable += "NullSafeMutableLiveData"  // AGP/Kotlin 2.0 compatibility bug
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
