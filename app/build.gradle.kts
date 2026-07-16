@@ -72,17 +72,12 @@ dependencies {
     implementation("androidx.media3:media3-ui:$media3Version")
     implementation("androidx.media3:media3-ui-compose:$media3Version")
 
-    // OkHttp for ONVIF SOAP/XML
+    // OkHttp for ONVIF SOAP/XML + Gemini REST API
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-    // Firebase AI Logic SDK (Gemini API)
-    implementation(platform("com.google.firebase:firebase-bom:34.15.0"))
-    implementation("com.google.firebase:firebase-ai")
-    implementation("com.google.firebase:firebase-appcheck-debug")
-
     // ML Kit on-device object detection
-    implementation("com.google.mlkit:object-detection:17.2.0")
+    implementation("com.google.mlkit:object-detection:17.0.2")
 
     // RTMP/RTSP client for audio backchannel
     implementation("com.github.pedroSG94:rtmp-rtsp-stream-client-java:2.3.0")

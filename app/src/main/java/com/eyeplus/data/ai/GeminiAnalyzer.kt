@@ -1,258 +1,294 @@
 package com.eyeplus.data.ai
 
 import android.graphics.Bitmap
+import android.util.Base64
 import android.util.Log
-import com.google.firebase.Firebase
-import com.google.firebase.ai.GenerativeBackend
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.*
+
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.TimeUnit
 
 /**
- * Integration with Google Gemini 2.5 Flash API via Firebase AI Logic SDK.
- *
- * Provides:
- * - Frame analysis (image + prompt → JSON)
- * - Text chat (conversation with history)
- * - Conversation history management
- *
- * Uses the Gemini Free Tier (1,500 requests/day, no credit card needed).
+ * Integration with Google Gemini 2.5 Flash API via direct REST calls.
+ * No Firebase dependencies needed.
  */
-class GeminiAnalyzer(private val apiKey: String? = null) {
+class GeminiAnalyzer(private val apiKey: String) {
 
     companion object {
         private const val TAG = "GeminiAnalyzer"
-        private const val MODEL_NAME = "gemini-2.5-flash"
+        private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+        private const val MODEL = "gemini-2.5-flash"
         private const val MAX_RETRIES = 3
         private const val MAX_HISTORY_SIZE = 20
-
-        // Max image dimension for API calls (1024px recommended)
         private const val MAX_IMAGE_DIMENSION = 1024
+
+        val SYSTEM_PROMPT = """
+You are an AI security camera guard named EyePlus, monitoring a PTZ camera.
+
+Return JSON only:
+{
+    "people_detected": true/false,
+    "person_count": number,
+    "familiar_person": true/false,
+    "suspicious_activity": true/false,
+    "description": "brief scene description",
+    "alert_level": "none"|"low"|"medium"|"high",
+    "activity": "what people are doing"
+}
+
+For text chat, respond naturally and helpfully based on your surveillance history.
+""".trimIndent()
+
+        private val FRAME_ANALYSIS_PROMPT = """
+Analyze this surveillance camera image. Return JSON:
+{
+    "people_detected": boolean,
+    "person_count": number,
+    "familiar_person": boolean,
+    "suspicious_activity": boolean,
+    "description": "what's happening",
+    "alert_level": "none|low|medium|high",
+    "activity": "what people are doing"
+}
+""".trimIndent()
     }
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
 
-    // Generative model instance
-    private val model = Firebase.ai(
-        backend = if (apiKey != null) {
-            GenerativeBackend.googleAI(apiKey, "https://generativelanguage.googleapis.com")
-        } else {
-            GenerativeBackend.googleAI()
-        }
-    ).generativeModel(
-        modelName = MODEL_NAME,
-        systemInstruction = SECURITY_SYSTEM_PROMPT,
-        generationConfig = generationConfig {
-            temperature = 0.2f
-            maxOutputTokens = 500
-        }
-    )
+    private val jsonMediaType = "application/json".toMediaType()
+    private val generateUrl = "$BASE_URL/$MODEL:generateContent?key=$apiKey"
+    private val streamUrl = "$BASE_URL/$MODEL:streamGenerateContent?alt=sse&key=$apiKey"
 
-    // Conversation history for chat mode
     private val messageHistory = mutableListOf<ChatMessage>()
 
-    /**
-     * Analyze a camera frame for people and activity.
-     *
-     * @param bitmap The camera frame to analyze (will be downscaled to max 1024px)
-     * @return Structured analysis result as FrameAnalysis
-     */
+    // ─── Frame Analysis ───────────────────────────
+
     suspend fun analyzeFrame(bitmap: Bitmap): FrameAnalysis {
         return withContext(Dispatchers.IO) {
             var lastError: Exception? = null
-
             for (attempt in 1..MAX_RETRIES) {
                 try {
                     val scaled = downscaleBitmap(bitmap, MAX_IMAGE_DIMENSION)
+                    val base64Image = bitmapToBase64(scaled)
 
-                    val prompt = content {
-                        image(scaled)
-                        text("""
-                            Analyze this surveillance camera image. Return JSON:
-                            {
-                                "people_detected": boolean,
-                                "person_count": number,
-                                "familiar_person": boolean,
-                                "suspicious_activity": boolean,
-                                "description": "what's happening",
-                                "alert_level": "none|low|medium|high",
-                                "activity": "what people are doing"
-                            }
-                        """.trimIndent())
-                    }
+                    val requestBody = buildGenerateRequest(base64Image, FRAME_ANALYSIS_PROMPT)
+                    val response = executeRequest(generateUrl, requestBody)
+                    val result = parseFrameAnalysis(response)
+                    if (result.error != null && attempt < MAX_RETRIES) continue
+                    return@withContext result
 
-                    val response = model.generateContent(prompt)
-                    val text = response.text ?: "{}"
-
-                    return@withContext try {
-                        json.decodeFromString<FrameAnalysis>(cleanJsonResponse(text))
-                    } catch (e: Exception) {
-                        Log.w(TAG, "JSON parse failed: ${e.message}, raw: $text")
-                        FrameAnalysis(
-                            description = text.take(200),
-                            error = "Parse error"
-                        )
-                    }
-
-                } catch (e: com.google.firebase.ai.type.FirebaseGenerativeAIException) {
-                    when (e.statusCode) {
-                        429 -> {
-                            // Rate limited - exponential backoff
-                            val waitMs = 1000L * (1 shl attempt) // 2s, 4s, 8s
-                            Log.w(TAG, "Rate limited, retrying in ${waitMs}ms")
+                } catch (e: Exception) {
+                    when {
+                        e.message?.contains("429") == true -> {
+                            val waitMs = 1000L * (1 shl attempt)
                             delay(waitMs)
                             lastError = e
                         }
-                        403 -> return@withContext FrameAnalysis(
-                            error = "Authentication failed - check your API key"
-                        )
-                        413 -> {
-                            // Request too large - downscale more
-                            val smaller = downscaleBitmap(bitmap, MAX_IMAGE_DIMENSION / 2)
-                            return@withContext analyzeFrame(smaller)
-                        }
-                        else -> {
-                            lastError = e
-                            delay(1000L)
-                        }
+                        e.message?.contains("403") == true ->
+                            return@withContext FrameAnalysis(error = "Chyba autentizace - zkontrolujte API klíč")
+                        else -> { lastError = e; delay(1000L) }
                     }
-                } catch (e: Exception) {
-                    lastError = e
-                    delay(1000L)
                 }
             }
-
-            FrameAnalysis(error = "Failed after $MAX_RETRIES retries: ${lastError?.message}")
+            FrameAnalysis(error = "Selhalo po $MAX_RETRIES pokusech: ${lastError?.message}")
         }
     }
 
-    /**
-     * Send a text message in the chat conversation.
-     * Maintains conversation history for context.
-     */
+    // ─── Chat ─────────────────────────────────────
+
     suspend fun chat(message: String): ChatMessage {
         return withContext(Dispatchers.IO) {
             try {
-                // Build content with history for context
-                val history = messageHistory
-                    .takeLast(MAX_HISTORY_SIZE)
-                    .filter { !it.isStreaming }
-
-                val chatContent = history.map { msg ->
-                    content(if (msg.role == "user") "user" else "model") {
-                        text(msg.text)
-                    }
-                } + content("user") { text(message) }
-
-                val response = model.generateContent(chatContent)
-                val reply = response.text ?: "I couldn't process that request."
-
-                // Update history
                 messageHistory.add(ChatMessage(role = "user", text = message))
-                val modelMessage = ChatMessage(role = "model", text = reply)
+                val requestBody = buildChatRequest()
+                val response = executeRequest(generateUrl, requestBody)
+                val replyText = extractTextResponse(response)
+
+                val modelMessage = ChatMessage(role = "model", text = replyText)
                 messageHistory.add(modelMessage)
-
-                // Trim history if too long
-                if (messageHistory.size > MAX_HISTORY_SIZE * 2) {
-                    messageHistory.removeAt(0)
-                    messageHistory.removeAt(0)
-                }
-
+                trimHistory()
                 modelMessage
             } catch (e: Exception) {
-                Log.e(TAG, "Chat error: ${e.message}", e)
-                ChatMessage(
-                    role = "model",
-                    text = "Error: ${e.message}",
-                    isStreaming = false
-                )
+                ChatMessage(role = "model", text = "Chyba: ${e.message}")
             }
         }
     }
 
-    /**
-     * Streaming version of chat - returns a Flow of text chunks.
-     */
     fun chatStream(message: String): Flow<ChatMessage> = flow {
         try {
-            // Add user message to history
             messageHistory.add(ChatMessage(role = "user", text = message))
-
-            val history = messageHistory
-                .takeLast(MAX_HISTORY_SIZE)
-                .filter { !it.isStreaming }
-                .map { msg ->
-                    content(if (msg.role == "user") "user" else "model") {
-                        text(msg.text)
-                    }
-                } + content("user") { text(message) }
-
+            val requestBody = buildChatRequest()
             val fullResponse = StringBuilder()
 
-            model.generateContentStream(history).collect { chunk ->
-                chunk.text?.let {
-                    fullResponse.append(it)
-                    emit(ChatMessage(role = "model", text = fullResponse.toString(), isStreaming = true))
+            val request = Request.Builder()
+                .url(streamUrl)
+                .post(requestBody.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val bodyStr = response.body?.string() ?: ""
+                bodyStr.lines().forEach { line ->
+                    if (line.startsWith("data: ")) {
+                        val chunk = line.removePrefix("data: ").trim()
+                        if (chunk == "[DONE]") return@forEach
+                        try {
+                            val text = extractTextFromChunk(chunk)
+                            fullResponse.append(text)
+                            emit(ChatMessage(role = "model", text = fullResponse.toString(), isStreaming = true))
+                        } catch (_: Exception) { }
+                    }
                 }
             }
 
             val finalText = fullResponse.toString()
             messageHistory.add(ChatMessage(role = "model", text = finalText))
             emit(ChatMessage(role = "model", text = finalText, isStreaming = false))
-
         } catch (e: Exception) {
-            emit(ChatMessage(role = "model", text = "Error: ${e.message}", isStreaming = false))
+            emit(ChatMessage(role = "model", text = "Chyba: ${e.message}", isStreaming = false))
         }
     }.flowOn(Dispatchers.IO)
 
-    /**
-     * Get the current conversation history.
-     */
     fun getHistory(): List<ChatMessage> = messageHistory.toList()
+    fun clearHistory() { messageHistory.clear() }
 
-    /**
-     * Clear conversation history.
-     */
-    fun clearHistory() {
-        messageHistory.clear()
-    }
-
-    /**
-     * Add a security event to the conversation context so the AI knows about it.
-     */
     fun addSystemMessage(text: String) {
-        messageHistory.add(ChatMessage(role = "system", text = "[Event] $text"))
+        messageHistory.add(ChatMessage(role = "system", text = "[Událost] $text"))
     }
 
-    /**
-     * Downscale a bitmap to fit within maxDimension while preserving aspect ratio.
-     */
-    private fun downscaleBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
-        val ratio = maxDimension.toFloat() / maxOf(bitmap.width, bitmap.height)
+    // ─── JSON Builders ────────────────────────────
+
+    private fun buildGenerateRequest(base64Image: String, prompt: String): String {
+        return buildJsonObject {
+            putJsonObject("system_instruction") {
+                putJsonArray("parts") {
+                    addJsonObject { put("text", JsonPrimitive(SYSTEM_PROMPT)) }
+                }
+            }
+            putJsonArray("contents") {
+                addJsonObject {
+                    putJsonArray("parts") {
+                        addJsonObject {
+                            putJsonObject("inline_data") {
+                                put("mime_type", JsonPrimitive("image/jpeg"))
+                                put("data", JsonPrimitive(base64Image))
+                            }
+                        }
+                        addJsonObject { put("text", JsonPrimitive(prompt)) }
+                    }
+                }
+            }
+            putJsonObject("generationConfig") {
+                put("temperature", JsonPrimitive(0.2))
+                put("maxOutputTokens", JsonPrimitive(500))
+            }
+        }.toString()
+    }
+
+    private fun buildChatRequest(): String {
+        val history = messageHistory.takeLast(MAX_HISTORY_SIZE * 2)
+        return buildJsonObject {
+            putJsonObject("system_instruction") {
+                putJsonArray("parts") {
+                    addJsonObject { put("text", JsonPrimitive(SYSTEM_PROMPT)) }
+                }
+            }
+            putJsonArray("contents") {
+                history.forEach { msg ->
+                    addJsonObject {
+                        put("role", JsonPrimitive(
+                            when (msg.role) { "model" -> "model"; else -> "user" }
+                        ))
+                        putJsonArray("parts") {
+                            addJsonObject { put("text", JsonPrimitive(msg.text)) }
+                        }
+                    }
+                }
+            }
+            putJsonObject("generationConfig") {
+                put("temperature", JsonPrimitive(0.7))
+                put("maxOutputTokens", JsonPrimitive(1000))
+            }
+        }.toString()
+    }
+
+    // ─── Response Parsers ─────────────────────────
+
+    private fun parseFrameAnalysis(jsonStr: String): FrameAnalysis {
+        return try {
+            val root = json.parseToJsonElement(jsonStr).jsonObject
+            val candidate = root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject ?: return FrameAnalysis()
+            val parts = candidate["content"]?.jsonObject?.get("parts")?.jsonArray ?: return FrameAnalysis()
+            val text = parts.firstOrNull()?.jsonObject?.get("text")?.jsonPrimitive?.content ?: return FrameAnalysis()
+            json.decodeFromString<FrameAnalysis>(cleanJson(text))
+        } catch (e: Exception) {
+            Log.w(TAG, "Parse error: ${e.message}")
+            FrameAnalysis(description = jsonStr.take(200), error = "Chyba parsování")
+        }
+    }
+
+    private fun extractTextResponse(jsonStr: String): String {
+        return try {
+            val root = json.parseToJsonElement(jsonStr).jsonObject
+            root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
+                ?.get("content")?.jsonObject?.get("parts")?.jsonArray
+                ?.joinToString("") { it.jsonObject["text"]?.jsonPrimitive?.content ?: "" }
+                ?: ""
+        } catch (_: Exception) { "" }
+    }
+
+    private fun extractTextFromChunk(jsonStr: String): String {
+        val root = json.parseToJsonElement(jsonStr).jsonObject
+        return root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
+            ?.get("content")?.jsonObject?.get("parts")?.jsonArray
+            ?.joinToString("") { it.jsonObject["text"]?.jsonPrimitive?.content ?: "" }
+            ?: ""
+    }
+
+    // ─── Helpers ──────────────────────────────────
+
+    private suspend fun executeRequest(url: String, body: String): String {
+        val request = Request.Builder().url(url).post(body.toRequestBody(jsonMediaType)).build()
+        return client.newCall(request).execute().use { response ->
+            val bodyStr = response.body?.string() ?: "{}"
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}: ${bodyStr.take(200)}")
+            bodyStr
+        }
+    }
+
+    private fun downscaleBitmap(bitmap: Bitmap, maxDim: Int): Bitmap {
+        val ratio = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
         if (ratio >= 1f) return bitmap
-        return Bitmap.createScaledBitmap(
-            bitmap,
-            (bitmap.width * ratio).toInt(),
-            (bitmap.height * ratio).toInt(),
-            true
-        )
+        return Bitmap.createScaledBitmap(bitmap, (bitmap.width * ratio).toInt(), (bitmap.height * ratio).toInt(), true)
     }
 
-    /**
-     * Clean the JSON response from the model (strip markdown fences if present).
-     */
-    private fun cleanJsonResponse(text: String): String {
-        return text
-            .trim()
-            .removePrefix("```json")
-            .removePrefix("```")
-            .removeSuffix("```")
-            .trim()
+    private fun bitmapToBase64(bitmap: Bitmap): String {
+        val stream = ByteArrayOutputStream()
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+        return Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+    }
+
+    private fun cleanJson(text: String): String = text.trim()
+        .removePrefix("```json").removePrefix("```")
+        .removeSuffix("```").trim()
+
+    private fun trimHistory() {
+        while (messageHistory.size > MAX_HISTORY_SIZE * 2) {
+            messageHistory.removeFirstOrNull()
+        }
     }
 }
