@@ -66,7 +66,7 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.8.5")
 
     // Media3 ExoPlayer for RTSP streaming
-    val media3Version = "1.10.1"
+    val media3Version = "1.9.2"
     implementation("androidx.media3:media3-exoplayer:$media3Version")
     implementation("androidx.media3:media3-exoplayer-rtsp:$media3Version")
     implementation("androidx.media3:media3-ui:$media3Version")
