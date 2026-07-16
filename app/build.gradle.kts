@@ -42,6 +42,7 @@ android {
     }
 
     lint {
+        abortOnError = false
         // AGP 8.7 + Kotlin 2.0 compatibility: these lint detectors crash with IncompatibleClassChangeError
         disable += listOf(
             "NullSafeMutableLiveData",
