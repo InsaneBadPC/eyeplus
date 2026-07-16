@@ -63,9 +63,7 @@ class OnvifClient(
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
-        .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
-        })
+        .addInterceptor(HttpLoggingInterceptor().setLevel(HttpLoggingInterceptor.Level.BODY))
         .build()
 
     private val cachedProfiles = mutableListOf<MediaProfile>()
@@ -526,27 +524,30 @@ class OnvifClient(
 /**
  * OkHttp logging interceptor for debugging SOAP calls.
  */
-class HttpLoggingInterceptor(private var level: Level = Level.BODY) : Interceptor {
+class HttpLoggingInterceptor(level: Level = Level.BODY) : Interceptor {
     enum class Level { NONE, BASIC, HEADERS, BODY }
 
-    fun setLevel(level: Level) {
-        this.level = level
+    private var currentLevel = level
+
+    fun setLevel(level: Level): HttpLoggingInterceptor {
+        currentLevel = level
+        return this
     }
 
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
-        if (level == Level.NONE) return chain.proceed(request)
+        if (currentLevel == Level.NONE) return chain.proceed(request)
 
-        Log.d(TAG, "--> ${request.method} ${request.url}")
-        if (level >= Level.HEADERS) {
-            request.headers.forEach { Log.d(TAG, "  ${it.first}: ${it.second}") }
+        Log.d("HttpLoggingInterceptor", "--> ${request.method} ${request.url}")
+        if (currentLevel >= Level.HEADERS) {
+            request.headers.forEach { Log.d("HttpLoggingInterceptor", "  ${it.first}: ${it.second}") }
         }
-        if (level >= Level.BODY && request.body != null) {
-            Log.d(TAG, "Body: ${request.body}")
+        if (currentLevel >= Level.BODY && request.body != null) {
+            Log.d("HttpLoggingInterceptor", "Body: ${request.body}")
         }
 
         val response = chain.proceed(request)
-        Log.d(TAG, "<-- ${response.code} ${response.message}")
+        Log.d("HttpLoggingInterceptor", "<-- ${response.code} ${response.message}")
         return response
     }
 }

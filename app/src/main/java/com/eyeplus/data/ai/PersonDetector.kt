@@ -3,8 +3,8 @@ package com.eyeplus.data.ai
 import android.graphics.Bitmap
 import android.util.Log
 import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.objectdetection.ObjectDetection
-import com.google.mlkit.vision.objectdetection.ObjectDetectorOptions
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.ObjectDetectorOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 

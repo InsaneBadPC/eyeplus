@@ -49,17 +49,17 @@ fun PtzJoystick(
                     onDragStart = { offset ->
                         isDragging = true
                         dragOffset = Offset(
-                            (offset.x - size.width / 2) / (size.width / 2),
-                            (offset.y - size.height / 2) / (size.height / 2)
-                        ).coerceIn(-1f, 1f)
+                            ((offset.x - size.width / 2) / (size.width / 2)).coerceIn(-1f, 1f),
+                            ((offset.y - size.height / 2) / (size.height / 2)).coerceIn(-1f, 1f)
+                        )
                         onMove(dragOffset.x, dragOffset.y)
                     },
                     onDrag = { change, _ ->
                         change.consume()
                         dragOffset = Offset(
-                            (change.position.x - size.width / 2) / (size.width / 2),
-                            (change.position.y - size.height / 2) / (size.height / 2)
-                        ).coerceIn(-1f, 1f)
+                            ((change.position.x - size.width / 2) / (size.width / 2)).coerceIn(-1f, 1f),
+                            ((change.position.y - size.height / 2) / (size.height / 2)).coerceIn(-1f, 1f)
+                        )
                         onMove(dragOffset.x, dragOffset.y)
                     },
                     onDragEnd = {

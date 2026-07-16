@@ -36,7 +36,7 @@ class ChatViewModel : ViewModel() {
     fun initialize(apiKey: String? = null) {
         if (geminiAnalyzer != null) return
 
-        geminiAnalyzer = GeminiAnalyzer(apiKey = apiKey)
+        geminiAnalyzer = GeminiAnalyzer(apiKey = apiKey ?: "")
 
         if (!welcomeShown) {
             welcomeShown = true

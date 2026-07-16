@@ -29,7 +29,7 @@ class RecorderManager(private val context: Context) {
 
     companion object {
         private const val TAG = "RecorderManager"
-        private const val MIME_TYPE = MediaFormat.MIME_TYPE_AVC // H.264
+        private const val MIME_TYPE = "video/avc" // H.264
         private const val FRAME_RATE = 30
         private const val BIT_RATE = 4_000_000 // 4 Mbps
         private const val I_FRAME_INTERVAL = 2 // seconds

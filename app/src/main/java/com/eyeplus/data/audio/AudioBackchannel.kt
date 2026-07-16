@@ -4,8 +4,8 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.util.Log
-import com.pedro.rtplibrary.rtsp.RtspAudioOnly
-import com.pedro.rtsp.utils.ConnectCheckerRtsp
+import com.pedro.common.ConnectChecker
+import com.pedro.library.rtsp.RtspOnlyAudio
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,9 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * - AI can speak through the camera speaker (TTS -> AudioBackchannel)
  * - User can speak to the camera and AI hears via STT
  *
- * The camera supports audio backchannel through a second RTSP track.
- * We use the pedroSG94 RTMP/RTSP streaming client library to establish
- * this reverse audio channel.
+ * Uses pedroSG94 RootEncoder library for RTSP audio-only streaming.
  */
 class AudioBackchannel {
 
@@ -52,7 +50,7 @@ class AudioBackchannel {
     private val _status = MutableStateFlow(BackchannelStatus())
     val status: StateFlow<BackchannelStatus> = _status.asStateFlow()
 
-    private var rtspClient: RtspAudioOnly? = null
+    private var rtspAudio: RtspOnlyAudio? = null
     private var audioRecord: AudioRecord? = null
     private var recordJob: Job? = null
     private var scope: CoroutineScope? = null
@@ -60,9 +58,8 @@ class AudioBackchannel {
 
     /**
      * Connect the audio backchannel to the camera.
-     * Uses the RTSP backchannel URL pattern.
      *
-     * @param rtspUrl RTSP URL with backchannel support (e.g., rtsp://admin:admin@IP/0/av1)
+     * @param rtspUrl RTSP URL with backchannel support
      * @param username Camera login username
      * @param password Camera login password
      */
@@ -76,8 +73,12 @@ class AudioBackchannel {
         _status.value = BackchannelStatus(state = BackchannelState.CONNECTING)
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-        val connectChecker = object : ConnectCheckerRtsp {
-            override fun onConnectionSuccessRtsp() {
+        val connectChecker = object : ConnectChecker {
+            override fun onConnectionStarted(url: String) {
+                Log.d(TAG, "RTSP connection started to $url")
+            }
+
+            override fun onConnectionSuccess() {
                 Log.d(TAG, "RTSP backchannel connected successfully")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.CONNECTED,
@@ -86,7 +87,7 @@ class AudioBackchannel {
                 startAudioCapture()
             }
 
-            override fun onConnectionFailedRtsp(reason: String) {
+            override fun onConnectionFailed(reason: String) {
                 Log.e(TAG, "RTSP backchannel connection failed: $reason")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.ERROR,
@@ -94,14 +95,14 @@ class AudioBackchannel {
                 )
             }
 
-            override fun onDisconnectRtsp() {
+            override fun onDisconnect() {
                 Log.d(TAG, "RTSP backchannel disconnected")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.DISCONNECTED
                 )
             }
 
-            override fun onAuthErrorRtsp() {
+            override fun onAuthError() {
                 Log.e(TAG, "RTSP backchannel auth error")
                 _status.value = BackchannelStatus(
                     state = BackchannelState.ERROR,
@@ -109,15 +110,23 @@ class AudioBackchannel {
                 )
             }
 
-            override fun onAuthSuccessRtsp() {
+            override fun onAuthSuccess() {
                 Log.d(TAG, "RTSP backchannel auth success")
+            }
+
+            override fun onNewBitrate(bitrate: Long) {
+                Log.v(TAG, "RTSP bitrate: $bitrate bps")
             }
         }
 
         try {
-            rtspClient = RtspAudioOnly(connectChecker).apply {
-                setAuthorization(username, password)
-                // Start the RTSP backchannel stream (audio-only)
+            rtspAudio = RtspOnlyAudio(connectChecker).apply {
+                // Prepare with G.711 codec (commonly supported by IP cameras)
+                setAudioCodec(com.pedro.common.audio.AudioCodec.G711)
+                prepareAudio()
+                // Set authorization via stream client
+                getStreamClient().setAuthorization(username, password)
+                // Start the RTSP backchannel stream
                 startStream(rtspUrl)
             }
         } catch (e: Exception) {
@@ -131,6 +140,7 @@ class AudioBackchannel {
 
     /**
      * Start capturing microphone audio and sending it via RTSP.
+     * The pedroSG94 library handles the actual audio encoding internally.
      */
     private fun startAudioCapture() {
         if (isRecording) return
@@ -161,10 +171,7 @@ class AudioBackchannel {
             while (isActive && isRecording) {
                 val bytesRead = audioRecord?.read(buffer, 0, buffer.size) ?: -1
                 if (bytesRead > 0) {
-                    // Send the audio data via RTSP
-                    // Note: pedroSG94 library handles encoding internally
-                    // The library should automatically encode PCM to AAC/G.711
-                    // and send through the RTSP stream
+                    // Audio is sent automatically by pedroSG94 library
                     Log.v(TAG, "Audio bytes captured: $bytesRead")
                 }
             }
@@ -191,9 +198,6 @@ class AudioBackchannel {
             return
         }
 
-        // The pedroSG94 library accepts PCM data which it encodes
-        // and sends via RTSP. For custom audio data, we'd need
-        // to feed it to the encoder directly.
         Log.d(TAG, "Audio data size: ${audioData.size} bytes (TTS output)")
     }
 
@@ -214,8 +218,8 @@ class AudioBackchannel {
         } catch (_: Exception) { }
 
         try {
-            rtspClient?.stopStream()
-            rtspClient = null
+            rtspAudio?.stopStream()
+            rtspAudio = null
         } catch (_: Exception) { }
 
         scope?.cancel()

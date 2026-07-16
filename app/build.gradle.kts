@@ -79,8 +79,8 @@ dependencies {
     // ML Kit on-device object detection
     implementation("com.google.mlkit:object-detection:17.0.2")
 
-    // RTMP/RTSP client for audio backchannel
-    implementation("com.github.pedroSG94:rtmp-rtsp-stream-client-java:2.3.0")
+    // RTMP/RTSP client for audio backchannel (RootEncoder)
+    implementation("com.github.pedroSG94.RootEncoder:library:2.7.5")
 
     // G.711 codec is implemented inline in G711Codec.kt
 

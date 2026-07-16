@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.view.SurfaceView
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -23,7 +24,7 @@ data class VideoPlayerState(
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = true,
     val error: String? = null,
-    val bitrate: Long = 0,
+    val bitrate: Int = 0,
     val videoWidth: Int = 0,
     val videoHeight: Int = 0
 )
@@ -162,10 +163,12 @@ fun RtspVideoPlayer(
     modifier: Modifier = Modifier,
     forceTcp: Boolean = true,
     enableAudio: Boolean = false,
+    onStateChanged: ((VideoPlayerState) -> Unit)? = null,
     player: ExoPlayer = rememberExoPlayer(
         rtspUrl = rtspUrl,
         forceTcp = forceTcp,
-        enableAudio = enableAudio
+        enableAudio = enableAudio,
+        onStateChanged = { onStateChanged?.invoke(it) }
     ),
     onFrameCaptured: ((Bitmap) -> Unit)? = null
 ) {
