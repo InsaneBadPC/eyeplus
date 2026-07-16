@@ -82,8 +82,7 @@ dependencies {
     // RTMP/RTSP client for audio backchannel
     implementation("com.github.pedroSG94:rtmp-rtsp-stream-client-java:2.3.0")
 
-    // G.711 codec for audio backchannel
-    implementation("com.github.theeasiestway:android-g711-codec:1.0.0")
+    // G.711 codec is implemented inline in G711Codec.kt
 
     // Koin DI
     implementation("io.insert-koin:koin-android:4.0.2")
